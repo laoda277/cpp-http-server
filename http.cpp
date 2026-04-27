@@ -13,14 +13,36 @@ class SimpleHTTPServer{
    int port;
    bool running;
    std::string readRequest(int clientSocket){
-      char buffer[4096]={0};
-      ssize_t bytesRead=recv(clientSocket,buffer,sizeof(buffer)-1,0);
+       const size_t kMaxTotal=8192;
+       const size_t kRecvChunk=4096;
+       std::string buf;
+       buf.reserve(512);
+       char chunk[kRecvChunk];
 
-      if(bytesRead<=0){
-         return"";
-      }
+       while(buf.size()<kMaxTotal){
+         const size_t room=kMaxTotal-buf.size();
+         const size_t toRead=kRecvChunk<room?kRecvChunk:room;
 
-      return std::string(buffer,bytesRead);
+         ssize_t n;
+
+         do{
+            n=recv(clientSocket,chunk,toRead,0);
+         }while(n<0&&errno==EINTR);
+
+         if(n<0){
+            return "";
+         }
+         if(n==0){
+            break;
+         }
+         buf.append(chunk,(size_t)n);
+         if(buf.find("\r\n\r\n")!=std::string::npos){
+            break;
+         }
+
+
+       }
+       return buf;
    }
       std::string extractPath(const std::string& request){
       size_t start=request.find(" ");
