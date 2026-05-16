@@ -1,0 +1,164 @@
+#include "EpollEngine.h"
+
+#include <cerrno>
+#include <cstring>
+#include <iostream>
+#include <vector>
+
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+EpollEngine::EpollEngine()
+: serverSocket_(-1) , epollFd_(-1) , running_(false){}
+EpollEngine::~EpollEngine(){
+    stop();
+}
+
+bool EpollEngine::setNonBlocking(int fd){
+    int flags = fcntl( fd , F_GETFL , 0 );
+    if(flags < 0){
+        return false;
+    }
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+bool EpollEngine::createListeningSocket(int port, int backlog){
+    serverSocket_ = socket(AF_INET, SOCK_STREAM, 0);
+    if(serverSocket_ < 0){
+        std::cerr<<"创建socket失败"<<std::endl;
+        return false;
+    }
+
+    int opt = 1;
+    setsockopt(serverSocket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    
+    if(!setNonBlocking(serverSocket_)){
+        std::cerr<<"设置服务器socket非阻塞失败"<<std::endl;
+        return false;
+    }
+
+    sockaddr_in serverAddr;
+    std::memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_port = htons(port);
+
+    if(bind(serverSocket_, reinterpret_cast<sockaddr*>( &serverAddr), sizeof(serverAddr)) < 0){
+        std::cerr<<"绑定端口失败"<<std::endl;
+        return false;
+    }
+
+    if(listen(serverSocket_, backlog) < 0){
+        std::cerr<<"监听端口失败"<<std::endl;
+        return false;
+    }
+    return true;
+
+
+}
+
+bool EpollEngine::setupEpoll(){
+    epollFd_ = epoll_create1(0);
+    if(epollFd_ < 0){
+        std::cerr<<"创建epoll失败"<<std::endl;
+        return false;
+    }
+
+    epoll_event serverEvent;
+    std::memset(&serverEvent, 0, sizeof(serverEvent));
+    serverEvent.events = EPOLLIN;
+    serverEvent.data.fd = serverSocket_;
+    if(epoll_ctl(epollFd_, EPOLL_CTL_ADD, serverSocket_, &serverEvent) < 0){
+        std::cerr << "epoll注册监听socket失败" << std::endl;
+        return false;
+    }
+    return true;
+}
+
+bool EpollEngine::cleanup(){
+    if(serverSocket_ >= 0){
+        close(serverSocket_);
+        serverSocket_ = -1;
+    }
+    if(epollFd_ >= 0){
+        close(epollFd_);
+        epollFd_  = -1;
+    }
+
+}
+
+bool EpollEngine::init(int port, int backlog){
+    cleanup();
+
+    if(!createListeningSocket(port, backlog)){
+      cleanup();
+      return false;
+    }
+
+    if(!setupEpoll()){
+        cleanup();
+        return false;
+    }
+
+    return true;
+
+}
+
+bool EpollEngine::run(const ClientHandler& onClientAccepted){
+    if(serverSocket_ < 0 || epollFd_ < 0){
+        std::cerr<<"EpollEngine未初始化"<<std::endl;
+        return false;
+    }
+
+    std::vector<epoll_event> events(16);
+    running_ = true;
+
+    while(running_){
+        int ready = epoll_wait(epollFd_, events.data(), static_cast <int> (events.size()), -1);
+        if(ready < 0){
+            if(errno == EINTR){
+                continue;
+            }
+            std::cerr<<"epoll_wait失败"<<std::endl;
+            return false;
+        }
+
+        for(int i = 0; i<ready; i++){
+            if(events[i].data.fd != serverSocket_){
+                continue;
+            }
+
+            while(true){
+                sockaddr_in clientAddr;
+                socklen_t clientAddrLen = sizeof(clientAddr);
+                int clientSocket = accept(serverSocket_, reinterpret_cast<sockaddr*>(&clientAddr), &clientAddrLen);
+                if(clientSocket < 0){
+                    if(errno == EAGAIN || errno == EWOULDBLOCK){
+                        break;
+                    }
+                    if(errno == EINTR){
+                        continue;
+                    }
+                    std::cerr<<"接受连接失败"<<std::endl;
+                    break;
+                }
+                onClientAccepted(clientSocket);
+            }
+
+        }
+    }
+    return true;
+
+}
+
+bool EpollEngine::stop() {
+    running_ = false;
+    cleanup();
+    return true;
+}
+int EpollEngine::listeningSocket() const {
+    return serverSocket_;
+}

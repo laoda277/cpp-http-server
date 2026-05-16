@@ -1,27 +1,32 @@
 #include <iostream>
 #include <string>
 #include <cstring>
+#include <cerrno>
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <unistd.h>
 #include <fstream>
 #include <sstream>
-#include <thread>
+#include <algorithm>
+#include "线程池.h"
+#include "EpollEngine.h"
 class SimpleHTTPServer{
    private:
-   int serverSocket;
    int port;
    bool running;
+   ThreadPool threadPool;
+   EpollEngine epollEngine
+   
+   ;
    std::string readRequest(int clientSocket){
-       const size_t kMaxTotal=8192;
-       const size_t kRecvChunk=4096;
+       const size_t kMaxTotal = 8192;
+       const size_t kRecvChunk = 4096;
        std::string buf;
        buf.reserve(512);
        char chunk[kRecvChunk];
 
-       while(buf.size()<kMaxTotal){
+       while (buf.size() < kMaxTotal) {
          const size_t room=kMaxTotal-buf.size();
-         const size_t toRead=kRecvChunk<room?kRecvChunk:room;
+         const size_t toRead = kRecvChunk < room ? kRecvChunk: room;
 
          ssize_t n;
 
@@ -121,7 +126,6 @@ class SimpleHTTPServer{
          
          close(clientSocket);
          
-
 
       }
 
@@ -227,120 +231,60 @@ class SimpleHTTPServer{
     }
 
 public:
-    SimpleHTTPServer(int port) : port(port), running(false), serverSocket(-1) {}
+    SimpleHTTPServer(int port) : 
+               port(port), 
+               running(false), 
+               threadPool(std::max<size_t> (2, std::thread::hardware_concurrency())) {}
 
 
-
-    bool start(){
-
-      serverSocket=socket(AF_INET,SOCK_STREAM,0);
-
-      if(serverSocket<0){
-
-         std::cerr<<"创建socket失败"<<std::endl;
-
+    bool start() {
+      if(!epollEngine.init(port, 10)){
          return false;
       }
 
+      running = true;
+      std::cout<<"服务器启动成功!"<<std::endl;
+      std::cout<<"访问地址：http://localhost:"<<port<<std::endl;
+      std::cout<<"按ctrl+c停止服务器"<<std::endl;
 
-      int opt=1;
-      setsockopt(serverSocket,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
-
-      struct sockaddr_in serverAddr;
-      
-      serverAddr.sin_family=AF_INET;
-      serverAddr.sin_addr.s_addr=INADDR_ANY;
-      serverAddr.sin_port=htons(port);
-
-       if(bind(serverSocket,(struct sockaddr*)&serverAddr,sizeof(serverAddr))<0){
-         std::cerr<<"绑定端口失败"<<std::endl;
-         close(serverSocket);
-         return false;
-
-      }
-
-      if(listen(serverSocket,10)<0){
-
-         std::cerr<<"服务器监听失败"<<std::endl;
-         close(serverSocket);
-         return false;
-      }
-
-     running=true;
-     std::cout<<"服务器启动成功!"<<std::endl;
-     std::cout<<"访问地址：http://localhost:"<<port<<std::endl;
-     std::cout<<"按ctrl+c停止服务器"<<std::endl;
-
-     while(running){
-
-      struct sockaddr_in clientAddr;
-      socklen_t clientAddrLen=sizeof(clientAddr);
-
-      int clientSocket=accept(serverSocket,(struct sockaddr*)&clientAddr,&clientAddrLen);
-
-      if(clientSocket<0){
-
-         if(running){
-            std::cerr<<"接受链接失败"<<std::endl;
-            
-         }
-         continue;
-      }
-
-      std::thread clientThread([this,clientSocket](){ 
-         this->handleClient(clientSocket);
-        
+      return epollEngine.run([this] (int clientSocket){
+             threadPool.enqueue([this, clientSocket](){
+            this->handleClient(clientSocket);
+         });
       });
 
-       clientThread.detach();
-
-     }
-     return true;
-
-
     }
-
-
 
     void stop(){
-      running =false;
-      if(serverSocket>=0){
-         close(serverSocket);
-         serverSocket=-1;
-      }
-
-     
+      running = false;
+      epollEngine.stop();
     }
 
-    ~SimpleHTTPServer(){
+    ~SimpleHTTPServer() {
       stop();
     }
- 
 
    };
 
-
-   int main(int argc,char* argv[]){
-
-
-      int port=8080;
-      if(argc>1){
-          port=std::stoi(argv[1]);
-
+   int main(int argc, char* argv[]){
+      int port = 8080;
+      if(argc > 1){
+         port = std::stoi(argv[1]);
       }
 
       SimpleHTTPServer server(port);
 
-      if(!server.start()){
+      if( !server.start()){
          std::cerr<<"服务器启动失败"<<std::endl;
          return 1;
-
       }
+
       return 0;
+
+
+
    }
-
-
-
+    
 
 
 

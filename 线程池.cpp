@@ -26,7 +26,7 @@ ThreadPool::ThreadPool(std::size_t threadCount):stop(false){
 
             }
            
-        })
+        });
     }
 
 }
