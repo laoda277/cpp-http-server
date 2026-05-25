@@ -1,13 +1,13 @@
-CC = g++
+CXX = g++
 
-CFLAGS = -Wall -pthread
+CXXFLAGS = -Wall -pthread -std=c++17
 
 TARGET = httpserver
 
-SRC = http.cpp 线程池.cpp EpollEngine.cpp
+SRC = http.cpp ThreadPool.cpp EpollEngine.cpp MimeTypes.cpp
 
 all:
-	$(CC) $(SRC) -o $(TARGET) $(CFLAGS)
+	$(CXX) $(SRC) -o $(TARGET) $(CXXFLAGS)
 
 clean:
 	rm -f $(TARGET)

@@ -78,7 +78,7 @@ bool EpollEngine::setupEpoll(){
     return true;
 }
 
-bool EpollEngine::cleanup(){
+void EpollEngine::cleanup(){
     if(serverSocket_ >= 0){
         close(serverSocket_);
         serverSocket_ = -1;

@@ -7,16 +7,21 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
-#include "线程池.h"
+#include <cstdlib>  
+#include <climits>   
+#include "ThreadPool.h"
 #include "EpollEngine.h"
+#include "MimeTypes.h"
 class SimpleHTTPServer{
    private:
    int port;
    bool running;
+   bool initialized;
+   std::string dirRoot = "./www";
    ThreadPool threadPool;
-   EpollEngine epollEngine
-   
-   ;
+   EpollEngine epollEngine;
+   MimeTypes mimeTypes;
+
    std::string readRequest(int clientSocket){
        const size_t kMaxTotal = 8192;
        const size_t kRecvChunk = 4096;
@@ -83,10 +88,6 @@ class SimpleHTTPServer{
        return response.str();
 
       }
-      std::string create404Response(){
-         std::string content="<html><body><h1>404 Not Found</h1></body></html>";
-         return createResponse(content,"text/html",404);
-      }
       
       void handleClient(int clientSocket) {
          std::string request=readRequest(clientSocket);
@@ -95,41 +96,73 @@ class SimpleHTTPServer{
             return;
          }
 
-         std::string path=extractPath(request);
-
-         std::cout<<"收到请求"<<path<<std::endl;
-
-         std::string response;
-
-         if(path=="/"||path=="/index.html"){
-            std::string content=readHTMLFile("/index.html");
-            if(content.empty()) response=createResponse(getDefaultPage());
-            else{
-               response=createResponse(content);
-            }
+         std::string userPath = extractPath(request);
+         if(userPath == "/" || userPath .empty()){
+            userPath = "/DefaultPage.html";
          }
-
-         else if(path=="/about"){
-            response=createResponse(getAboutPage());
+         char resolved[PATH_MAX];
+         if(realpath((dirRoot + userPath).c_str(), resolved) == nullptr){
+            send404(clientSocket);
+            return;
          }
+         std::string path = resolved;
+         
 
-         else if(path=="/api/status"){
-            response=createResponse(getStatusResponse(),"application/json");
-
+         if(path.compare(0, dirRoot.size(), dirRoot) != 0){
+            send404(clientSocket);
+            return;
          }
-
+         
          else{
-            response= create404Response();
+            std::string type = getMimeType(path);
+            std::string content = readHTMLFile(path);
+         if(content.empty()){
+            send404(clientSocket);
+            return;
          }
-
-         send(clientSocket,response.c_str(),response.length(),0);
-         
-         close(clientSocket);
-         
+         std::string response = createResponse(content, type, 200); 
+         sendResponse(clientSocket, response); 
+         }           
 
       }
 
-      std::string readHTMLFile(const std::string& filename){
+      void sendResponse(int clientSocket, const std::string& response){
+         const char* data = response.data();
+         size_t toSend = response.size();
+
+         while(toSend > 0){
+            ssize_t sent = send(clientSocket, data, toSend, 0);
+            if(sent < 0){
+               if(errno == EINTR) continue;
+               break;
+            }
+            data += sent;
+            toSend -= sent;
+         }
+
+         close(clientSocket);
+      }
+
+      void send404(int clientSocket){
+         std::string path =  dirRoot + "/404Response.html";
+         std::string content = readHTMLFile(path);
+         if(content.empty()){
+            content =  "<html><body><h1>404 Not Found</h1></body></html>";
+         }
+         std::string response = createResponse(content, "text/html", 404);
+         sendResponse(clientSocket, response);
+      }
+
+       std::string getMimeType(const std::string& path){
+         size_t pos = path.find_last_of('.');
+          if(pos == std::string::npos) return "application/octet-stream";
+          std::string ext = path.substr(pos + 1);
+          std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+          return mimeTypes.getType(ext);
+
+          }
+
+       std::string readHTMLFile(const std::string& filename){
 
          std::ifstream file(filename);
 
@@ -148,97 +181,33 @@ class SimpleHTTPServer{
       }
 
 
-
-
-      std::string getDefaultPage() {
-        return R"(
-<!DOCTYPE html>
-<html>
-<head>
-    <title>C++ 简单HTTP服务器</title>
-    <meta charset="UTF-8">
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        h1 { color: #333; }
-        .links { margin: 20px 0; }
-        .links a { margin-right: 15px; color: #0066cc; text-decoration: none; }
-        .links a:hover { text-decoration: underline; }
-    </style>
-</head>
-<body>
-    <h1>🎉 欢迎使用C++ HTTP服务器！</h1>
-    <p>这是一个用C++编写的简单HTTP服务器，适合新手学习网络编程。</p>
-
-    <div class="links">
-        <a href="/about">关于</a>
-        <a href="/api/status">API状态</a>
-    </div>
-
-    <h2>功能特性：</h2>
-    <ul>
-        <li>基础HTTP/1.1协议支持</li>
-        <li>简单的路由处理</li>
-        <li>静态HTML文件服务</li>
-        <li>JSON API接口</li>
-        <li>多客户端并发支持</li>
-    </ul>
-</body>
-</html>
-        )";
-    }
-
-    // 关于页面
-    std::string getAboutPage() {
-        return R"(
-<!DOCTYPE html>
-<html>
-<head>
-    <title>关于 - C++ HTTP服务器</title>
-    <meta charset="UTF-8">
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        a { color: #0066cc; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-    </style>
-</head>
-<body>
-    <h1>关于这个项目</h1>
-    <p>这是一个用C++编写的简单HTTP服务器，专为新手入门设计。</p>
-
-    <h2>项目特点：</h2>
-    <ul>
-        <li>代码简洁易懂，约200行</li>
-        <li>使用标准C++库，无需额外依赖</li>
-        <li>支持基本的HTTP GET请求</li>
-        <li>包含路由处理功能</li>
-        <li>多线程支持</li>
-    </ul>
-
-    <p><a href="/">← 返回首页</a></p>
-</body>
-</html>
-        )";
-    }
-
-    // API状态响应
-    std::string getStatusResponse() {
-        return R"({
-    "status": "running",
-    "server": "C++ Simple HTTP Server",
-    "version": "1.0.0",
-    "message": "服务器正常运行中"
-})";
-    }
-
 public:
     SimpleHTTPServer(int port) : 
                port(port), 
                running(false), 
-               threadPool(std::max<size_t> (2, std::thread::hardware_concurrency())) {}
+               initialized(false),
+               threadPool(std::max<size_t> (2, std::thread::hardware_concurrency())) {
+                  if(!mimeTypes.loadFromFile("mime.types")){
+                     mimeTypes.setDefaults();
+                  }
+
+                  char resolved[PATH_MAX];
+                  if(realpath(dirRoot.c_str(), resolved) == nullptr){
+                     std::cerr<<"文件根目录解析失败："<<dirRoot<<std::endl;
+                  }
+                  else{
+                     dirRoot = resolved;
+                     initialized = true;
+                  }
+               }
+
+                   
+
 
 
     bool start() {
-      if(!epollEngine.init(port, 10)){
+      if(!epollEngine.init(port, 10)||!initialized){
+         std::cerr<<"服务器初始化失败"<<std::endl;
          return false;
       }
 

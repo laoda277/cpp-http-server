@@ -26,6 +26,6 @@ private:
     bool setNonBlocking(int fd);
     bool createListeningSocket(int port, int backlog);
     bool setupEpoll();
-    bool cleanup();
+    void cleanup();
 
 };
