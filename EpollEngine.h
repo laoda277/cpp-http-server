@@ -22,10 +22,14 @@ private:
     int serverSocket_;
     int epollFd_;
     bool running_;
+    int wakeupFd_;
 
     bool setNonBlocking(int fd);
     bool createListeningSocket(int port, int backlog);
     bool setupEpoll();
+    bool setupEvent();
     void cleanup();
+    static void sigHandle(int sig);
+    inline static EpollEngine* instance_ = nullptr;
 
 };

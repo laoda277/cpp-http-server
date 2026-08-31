@@ -1,6 +1,6 @@
 CXX = g++
 
-CXXFLAGS = -Wall -pthread -std=c++17
+CXXFLAGS = -Wall -O2 -pthread -std=c++17
 
 TARGET = httpserver
 

@@ -10,11 +10,14 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <csignal>
+#include <sys/eventfd.h>
 
 EpollEngine::EpollEngine()
-: serverSocket_(-1) , epollFd_(-1) , running_(false){}
+: serverSocket_(-1) , epollFd_(-1) , running_(false), wakeupFd_(-1){}
 EpollEngine::~EpollEngine(){
     stop();
+    cleanup();
 }
 
 bool EpollEngine::setNonBlocking(int fd){
@@ -78,6 +81,20 @@ bool EpollEngine::setupEpoll(){
     return true;
 }
 
+bool EpollEngine::setupEvent(){
+    wakeupFd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    epoll_event wakeupEvent;
+    std::memset(&wakeupEvent, 0, sizeof(wakeupEvent));
+    wakeupEvent.events = EPOLLIN;
+    wakeupEvent.data.fd = wakeupFd_;
+    if(epoll_ctl(epollFd_, EPOLL_CTL_ADD, wakeupFd_, &wakeupEvent) <0){
+        std::cerr<<"epoll注册监听event失败" << std::endl;
+        return false;
+    }
+    return true;
+
+}
+
 void EpollEngine::cleanup(){
     if(serverSocket_ >= 0){
         close(serverSocket_);
@@ -87,7 +104,17 @@ void EpollEngine::cleanup(){
         close(epollFd_);
         epollFd_  = -1;
     }
+    if(wakeupFd_ >= 0){
+        close(wakeupFd_);
+        wakeupFd_ = -1;
+    } 
 
+}
+void EpollEngine::sigHandle(int sig){
+    if(instance_ && instance_->wakeupFd_ >= 0) {
+    uint64_t val = 1;
+    write(instance_->wakeupFd_, &val, sizeof(val));
+    }
 }
 
 bool EpollEngine::init(int port, int backlog){
@@ -102,6 +129,19 @@ bool EpollEngine::init(int port, int backlog){
         cleanup();
         return false;
     }
+    
+    if(!setupEvent()){
+        cleanup();
+        return false;
+    }
+
+    instance_ = this;
+    struct sigaction sig;
+    sig.sa_handler = EpollEngine::sigHandle;
+    sigemptyset(&sig.sa_mask);
+    sig.sa_flags = SA_RESTART;
+
+    sigaction(SIGINT, &sig, nullptr);
 
     return true;
 
@@ -127,10 +167,7 @@ bool EpollEngine::run(const ClientHandler& onClientAccepted){
         }
 
         for(int i = 0; i<ready; i++){
-            if(events[i].data.fd != serverSocket_){
-                continue;
-            }
-
+            if(events[i].data.fd == serverSocket_){
             while(true){
                 sockaddr_in clientAddr;
                 socklen_t clientAddrLen = sizeof(clientAddr);
@@ -147,6 +184,14 @@ bool EpollEngine::run(const ClientHandler& onClientAccepted){
                 }
                 onClientAccepted(clientSocket);
             }
+        }
+        else if(events[i].data.fd == wakeupFd_){
+            uint64_t val;
+            ssize_t n = read(wakeupFd_, &val, sizeof(val));
+            (void)n;
+            running_ = false;
+            break;
+        }
 
         }
     }
@@ -156,8 +201,12 @@ bool EpollEngine::run(const ClientHandler& onClientAccepted){
 
 bool EpollEngine::stop() {
     running_ = false;
-    cleanup();
+    if(wakeupFd_ >= 0){
+        uint64_t val = 1;
+        write(wakeupFd_, &val, sizeof(val));
+    }
     return true;
+    
 }
 int EpollEngine::listeningSocket() const {
     return serverSocket_;

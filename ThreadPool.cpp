@@ -1,4 +1,5 @@
 #include "ThreadPool.h"
+#include <iostream>
 
 ThreadPool::ThreadPool(std::size_t threadCount):stop(false){
     if(threadCount==0){
@@ -9,6 +10,7 @@ ThreadPool::ThreadPool(std::size_t threadCount):stop(false){
     for(std::size_t i=0;i<threadCount;i++){
         workers.emplace_back([this](){
             while(true){
+            
                 std::function<void()> task;
                { 
                 
@@ -22,7 +24,16 @@ ThreadPool::ThreadPool(std::size_t threadCount):stop(false){
                 task=std::move(tasks.front());
                 tasks.pop();
              }
+             try{
                 task();
+            }
+            catch(std::exception& e){
+                std::cerr<<"错误原因"<<e.what()<<std::endl;
+                
+            }
+            catch(...){
+                std::cerr<<"未知异常发生"<<std::endl;
+            }
 
             }
            

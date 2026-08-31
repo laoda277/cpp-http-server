@@ -22,6 +22,21 @@ class SimpleHTTPServer{
    EpollEngine epollEngine;
    MimeTypes mimeTypes;
 
+   class SocketCloser{
+         public:
+            int closerSocket;
+            SocketCloser(int clientSocket):closerSocket(clientSocket){ }
+
+            ~SocketCloser(){
+            if(closerSocket >= 0){
+               close(closerSocket);
+               }
+            }
+
+            SocketCloser(const SocketCloser&) = delete;
+            SocketCloser& operator = (SocketCloser&) = delete;
+         };
+
    std::string readRequest(int clientSocket){
        const size_t kMaxTotal = 8192;
        const size_t kRecvChunk = 4096;
@@ -74,6 +89,9 @@ class SimpleHTTPServer{
        else if(statusCode==404){
          statusMessage="Not Found";
        }
+       else if(statusCode==500){
+         statusMessage="Internal Server Error";
+       }
        else{
          statusMessage="Unknown";
        }
@@ -90,9 +108,12 @@ class SimpleHTTPServer{
       }
       
       void handleClient(int clientSocket) {
+         try{
+
+         SocketCloser socketCloser(clientSocket);
+
          std::string request=readRequest(clientSocket);
          if(request.empty()){
-            close(clientSocket);
             return;
          }
 
@@ -108,7 +129,7 @@ class SimpleHTTPServer{
          std::string path = resolved;
          
 
-         if(path.compare(0, dirRoot.size(), dirRoot) != 0){
+         if(path.compare(0, dirRoot.size(), dirRoot) != 0 || (path.size() > dirRoot.size() && path[dirRoot.size()] != '/')){
             send404(clientSocket);
             return;
          }
@@ -122,7 +143,13 @@ class SimpleHTTPServer{
          }
          std::string response = createResponse(content, type, 200); 
          sendResponse(clientSocket, response); 
-         }           
+         }   
+      }    
+      
+      catch(...){
+         std::cerr<<"服务器出现异常"<<std::endl;
+         send500(clientSocket);
+      }
 
       }
 
@@ -139,8 +166,6 @@ class SimpleHTTPServer{
             data += sent;
             toSend -= sent;
          }
-
-         close(clientSocket);
       }
 
       void send404(int clientSocket){
@@ -150,6 +175,18 @@ class SimpleHTTPServer{
             content =  "<html><body><h1>404 Not Found</h1></body></html>";
          }
          std::string response = createResponse(content, "text/html", 404);
+         std::cerr << "Sending 404 Not Found response" << std::endl;
+         sendResponse(clientSocket, response);
+      }
+
+      void send500(int clientSocket){
+         std::string path = dirRoot + "/500Response.html";
+         std::string content = readHTMLFile(path);
+         if(content.empty()){
+            content =  "<html><body><h1>500 Internal Server Error</h1></body></html>";
+         }
+         std::string response = createResponse(content, "text/html", 500);
+         std::cerr << "Sending 500 error response" << std::endl;
          sendResponse(clientSocket, response);
       }
 
@@ -253,13 +290,3 @@ public:
 
 
    }
-    
-
-
-
-
-
-
-
-
-
