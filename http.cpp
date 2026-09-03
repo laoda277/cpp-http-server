@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cerrno>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <fstream>
 #include <sstream>
@@ -37,37 +38,35 @@ class SimpleHTTPServer{
             SocketCloser& operator = (SocketCloser&) = delete;
          };
 
-   std::string readRequest(int clientSocket){
+   std::string readRequest(int clientSocket,std::string& connBuffer){
        const size_t kMaxTotal = 8192;
-       const size_t kRecvChunk = 4096;
-       std::string buf;
-       buf.reserve(512);
-       char chunk[kRecvChunk];
+       char chunk[4096];
 
-       while (buf.size() < kMaxTotal) {
-         const size_t room=kMaxTotal-buf.size();
-         const size_t toRead = kRecvChunk < room ? kRecvChunk: room;
+       while(true){
+         size_t pos = connBuffer.find("\r\n\r\n");
+         if(pos != std::string::npos){
+            std::string request = connBuffer.substr(0, pos+4);
+            connBuffer.erase(0, pos+4);
+            return request;
+         }
+
+         if(connBuffer.size() >= kMaxTotal) return "";
 
          ssize_t n;
-
          do{
-            n=recv(clientSocket,chunk,toRead,0);
-         }while(n<0&&errno==EINTR);
+            n = recv(clientSocket, chunk, sizeof(chunk), 0);
+         }while(n<0 && errno == EINTR);
 
-         if(n<0){
+         if(n < 0){
             return "";
          }
-         if(n==0){
-            break;
+         if(n == 0){
+            return "";
          }
-         buf.append(chunk,(size_t)n);
-         if(buf.find("\r\n\r\n")!=std::string::npos){
-            break;
-         }
-
-
+         connBuffer.append(chunk, (size_t)n);      
        }
-       return buf;
+
+       
    }
       std::string extractPath(const std::string& request){
       size_t start=request.find(" ");
@@ -99,7 +98,7 @@ class SimpleHTTPServer{
        response<<"HTTP/1.1 "<<statusCode<<" "<<statusMessage<<"\r\n";
        response<<"Content-Type: "<<contentType<<"\r\n";
        response<<"Content-length: "<<content.length()<<"\r\n";
-       response<<"Connection: close\r\n";
+       response<<"Connection: keep-alive\r\n";
        response<<"\r\n";
        response<<content;
 
@@ -112,14 +111,26 @@ class SimpleHTTPServer{
 
          SocketCloser socketCloser(clientSocket);
 
-         std::string request=readRequest(clientSocket);
+         struct timeval timeout = {30, 0};
+         setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+         std::string connBuffer;
+         while(true){
+         std::string request=readRequest(clientSocket, connBuffer);
          if(request.empty()){
-            return;
+            break;
          }
+      
 
          std::string userPath = extractPath(request);
          if(userPath == "/" || userPath .empty()){
             userPath = "/DefaultPage.html";
+         }
+         if(userPath == "/about") {
+            userPath = "/AboutPage.html";
+         }
+         else if(userPath == "/api/status") {
+            userPath = "/Status.json";
          }
          char resolved[PATH_MAX];
          if(realpath((dirRoot + userPath).c_str(), resolved) == nullptr){
@@ -144,6 +155,7 @@ class SimpleHTTPServer{
          std::string response = createResponse(content, type, 200); 
          sendResponse(clientSocket, response); 
          }   
+      }
       }    
       
       catch(...){
