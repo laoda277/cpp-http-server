@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cstdlib>  
 #include <climits>   
+#include <unordered_map>
+#include <mutex>
 #include "ThreadPool.h"
 #include "EpollEngine.h"
 #include "MimeTypes.h"
@@ -18,39 +20,29 @@ class SimpleHTTPServer{
    int port;
    bool running;
    bool initialized;
+   std::unordered_map<int, std::string> connBuffers_;
+   std::mutex connMutex_;
    std::string dirRoot = "./www";
    ThreadPool threadPool;
    EpollEngine epollEngine;
    MimeTypes mimeTypes;
 
-   class SocketCloser{
-         public:
-            int closerSocket;
-            SocketCloser(int clientSocket):closerSocket(clientSocket){ }
 
-            ~SocketCloser(){
-            if(closerSocket >= 0){
-               close(closerSocket);
-               }
-            }
-
-            SocketCloser(const SocketCloser&) = delete;
-            SocketCloser& operator = (SocketCloser&) = delete;
-         };
-
-   std::string readRequest(int clientSocket,std::string& connBuffer){
+   enum class ReadStatus {Request, WaitMore, Closed, Error, TooLarge};
+   
+   ReadStatus readRequest(int clientSocket,std::string& connBuffer, std::string& request){
        const size_t kMaxTotal = 8192;
        char chunk[4096];
 
        while(true){
          size_t pos = connBuffer.find("\r\n\r\n");
          if(pos != std::string::npos){
-            std::string request = connBuffer.substr(0, pos+4);
+            request = connBuffer.substr(0, pos+4);
             connBuffer.erase(0, pos+4);
-            return request;
+            return ReadStatus::Request;
          }
 
-         if(connBuffer.size() >= kMaxTotal) return "";
+         if(connBuffer.size() >= kMaxTotal) return ReadStatus::TooLarge;
 
          ssize_t n;
          do{
@@ -58,10 +50,12 @@ class SimpleHTTPServer{
          }while(n<0 && errno == EINTR);
 
          if(n < 0){
-            return "";
+            if(errno == EAGAIN || errno == EWOULDBLOCK)
+            return ReadStatus::WaitMore;
+         return ReadStatus::Error;
          }
          if(n == 0){
-            return "";
+            return ReadStatus::Closed;
          }
          connBuffer.append(chunk, (size_t)n);      
        }
@@ -106,23 +100,8 @@ class SimpleHTTPServer{
 
       }
       
-      void handleClient(int clientSocket) {
-         try{
-
-         SocketCloser socketCloser(clientSocket);
-
-         struct timeval timeout = {30, 0};
-         setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-
-         std::string connBuffer;
-         while(true){
-         std::string request=readRequest(clientSocket, connBuffer);
-         if(request.empty()){
-            break;
-         }
-      
-
-         std::string userPath = extractPath(request);
+      void processRequest(int clientSocket, const std::string& request){
+         std::string userPath = extractPath(request);    
          if(userPath == "/" || userPath .empty()){
             userPath = "/DefaultPage.html";
          }
@@ -139,7 +118,6 @@ class SimpleHTTPServer{
          }
          std::string path = resolved;
          
-
          if(path.compare(0, dirRoot.size(), dirRoot) != 0 || (path.size() > dirRoot.size() && path[dirRoot.size()] != '/')){
             send404(clientSocket);
             return;
@@ -154,15 +132,50 @@ class SimpleHTTPServer{
          }
          std::string response = createResponse(content, type, 200); 
          sendResponse(clientSocket, response); 
-         }   
-      }
-      }    
-      
-      catch(...){
-         std::cerr<<"服务器出现异常"<<std::endl;
-         send500(clientSocket);
+         }  
       }
 
+      void handleOnce(int clientSocket){
+         std::string buf;
+         {
+            std::lock_guard<std::mutex> lk(connMutex_);
+            buf = std::move(connBuffers_[clientSocket]);
+         }
+
+         while(true){
+            std::string request;
+            ReadStatus st = readRequest(clientSocket, buf, request);
+
+            if(st == ReadStatus::Request) {
+               try{
+                  processRequest(clientSocket, request);
+               }catch(...){
+                  std::cerr<<"服务器出现异常"<<std::endl;
+                  send500(clientSocket);
+               }
+               continue;
+            }
+            if(st == ReadStatus::WaitMore) break;
+            if(st == ReadStatus::TooLarge) send500(clientSocket);
+            closeConnection(clientSocket);
+            return;
+         }
+         {
+            std::lock_guard<std::mutex> lk(connMutex_);
+            connBuffers_[clientSocket] = std::move(buf);
+         }
+
+}
+      
+
+
+      void closeConnection(int fd){
+         epollEngine.removeConnection(fd);
+         {
+            std::lock_guard<std::mutex> lk(connMutex_);
+            connBuffers_.erase(fd);
+         }
+         close(fd);
       }
 
       void sendResponse(int clientSocket, const std::string& response){
@@ -267,7 +280,7 @@ public:
 
       return epollEngine.run([this] (int clientSocket){
              threadPool.enqueue([this, clientSocket](){
-            this->handleClient(clientSocket);
+            this->handleOnce(clientSocket);
          });
       });
 

@@ -10,8 +10,11 @@ public:
     ~EpollEngine();
 
     using ClientHandler = std::function<void (int)>;
+    using ConnHandler = std::function<void (int)>;
+    bool addConnection(int fd);
+    void removeConnection(int fd);
     bool init(int port, int backlog = 128);
-    bool run(const ClientHandler& onClientAccepted);
+    bool run(const ConnHandler& onConnWorking);
     bool stop();
     
     int listeningSocket() const;

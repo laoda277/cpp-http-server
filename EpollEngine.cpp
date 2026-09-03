@@ -95,6 +95,18 @@ bool EpollEngine::setupEvent(){
 
 }
 
+bool EpollEngine::addConnection(int fd){
+    if(!setNonBlocking(fd)) return false;
+    epoll_event ev{};
+    ev.events = EPOLLIN;
+    ev.data.fd = fd;
+    return epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev) == 0;
+}
+
+void EpollEngine::removeConnection(int fd){
+    epoll_ctl(epollFd_, EPOLL_CTL_DEL, fd, nullptr);
+}
+
 void EpollEngine::cleanup(){
     if(serverSocket_ >= 0){
         close(serverSocket_);
@@ -147,7 +159,7 @@ bool EpollEngine::init(int port, int backlog){
 
 }
 
-bool EpollEngine::run(const ClientHandler& onClientAccepted){
+bool EpollEngine::run(const ConnHandler& onConnWorking){
     if(serverSocket_ < 0 || epollFd_ < 0){
         std::cerr<<"EpollEngine未初始化"<<std::endl;
         return false;
@@ -182,7 +194,7 @@ bool EpollEngine::run(const ClientHandler& onClientAccepted){
                     std::cerr<<"接受连接失败"<<std::endl;
                     break;
                 }
-                onClientAccepted(clientSocket);
+                addConnection(clientSocket);
             }
         }
         else if(events[i].data.fd == wakeupFd_){
@@ -191,6 +203,9 @@ bool EpollEngine::run(const ClientHandler& onClientAccepted){
             (void)n;
             running_ = false;
             break;
+        }
+        else{
+            onConnWorking(events[i].data.fd);
         }
 
         }
