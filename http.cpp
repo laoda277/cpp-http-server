@@ -164,6 +164,7 @@ class SimpleHTTPServer{
             std::lock_guard<std::mutex> lk(connMutex_);
             connBuffers_[clientSocket] = std::move(buf);
          }
+         epollEngine.armConnection(clientSocket);
 
 }
       

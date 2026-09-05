@@ -95,10 +95,17 @@ bool EpollEngine::setupEvent(){
 
 }
 
+bool EpollEngine::armConnection(int fd) {
+    epoll_event ev{};
+    ev.events = EPOLLIN | EPOLLONESHOT;
+    ev.data.fd = fd;
+    return epoll_ctl(epollFd_, EPOLL_CTL_MOD, fd, &ev) == 0;
+}
+
 bool EpollEngine::addConnection(int fd){
     if(!setNonBlocking(fd)) return false;
     epoll_event ev{};
-    ev.events = EPOLLIN;
+    ev.events = EPOLLIN | EPOLLONESHOT;
     ev.data.fd = fd;
     return epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev) == 0;
 }
