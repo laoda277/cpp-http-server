@@ -12,6 +12,9 @@
 #include <unistd.h>
 #include <csignal>
 #include <sys/eventfd.h>
+#include <cstdint>      
+#include <sys/epoll.h>  
+
 
 EpollEngine::EpollEngine()
 : serverSocket_(-1) , epollFd_(-1) , running_(false), wakeupFd_(-1){}
@@ -95,9 +98,9 @@ bool EpollEngine::setupEvent(){
 
 }
 
-bool EpollEngine::armConnection(int fd) {
+bool EpollEngine::armConnection(int fd, uint32_t events) {
     epoll_event ev{};
-    ev.events = EPOLLIN | EPOLLONESHOT;
+    ev.events = events | EPOLLONESHOT;
     ev.data.fd = fd;
     return epoll_ctl(epollFd_, EPOLL_CTL_MOD, fd, &ev) == 0;
 }
@@ -166,7 +169,7 @@ bool EpollEngine::init(int port, int backlog){
 
 }
 
-bool EpollEngine::run(const ConnHandler& onConnWorking){
+bool EpollEngine::run(const ConnHandler& onConnWorking, const TickHandler& onTick ){
     if(serverSocket_ < 0 || epollFd_ < 0){
         std::cerr<<"EpollEngine未初始化"<<std::endl;
         return false;
@@ -176,7 +179,7 @@ bool EpollEngine::run(const ConnHandler& onConnWorking){
     running_ = true;
 
     while(running_){
-        int ready = epoll_wait(epollFd_, events.data(), static_cast <int> (events.size()), -1);
+        int ready = epoll_wait(epollFd_, events.data(), static_cast <int> (events.size()), 1000);
         if(ready < 0){
             if(errno == EINTR){
                 continue;
@@ -212,10 +215,11 @@ bool EpollEngine::run(const ConnHandler& onConnWorking){
             break;
         }
         else{
-            onConnWorking(events[i].data.fd);
+            onConnWorking(events[i].data.fd, events[i].events);
         }
 
         }
+        if(onTick) onTick();
     }
     return true;
 

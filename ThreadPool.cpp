@@ -57,8 +57,7 @@ void ThreadPool::enqueue(std::function <void()> task){
 
 }
 
-ThreadPool::~ThreadPool(){
-
+void ThreadPool::drain(){
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         stop=true;
@@ -74,4 +73,9 @@ ThreadPool::~ThreadPool(){
 
         }
     }
+    }
+
+ThreadPool::~ThreadPool(){
+    drain();
+ 
 }

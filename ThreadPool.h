@@ -16,6 +16,8 @@ public :
 
     void enqueue(std::function <void()> task);
 
+    void drain();
+
 private :
 
 std::vector<std::thread > workers;

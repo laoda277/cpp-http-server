@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <cstdint>        
+#include <sys/epoll.h>
 
 class EpollEngine{
 
@@ -10,12 +12,14 @@ public:
     ~EpollEngine();
 
     using ClientHandler = std::function<void (int)>;
-    using ConnHandler = std::function<void (int)>;
-    bool armConnection(int fd);
+    using ConnHandler = std::function<void (int, uint32_t)>;
+    using TickHandler = std::function<void()>;
+
+    bool armConnection(int fd, uint32_t events = EPOLLIN);
     bool addConnection(int fd);
     void removeConnection(int fd);
     bool init(int port, int backlog = 128);
-    bool run(const ConnHandler& onConnWorking);
+    bool run(const ConnHandler& onConnWorking, const TickHandler& onTick = nullptr);
     bool stop();
     
     int listeningSocket() const;
