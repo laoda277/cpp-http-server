@@ -18,6 +18,7 @@
 #include "ThreadPool.h"
 #include "EpollEngine.h"
 #include "MimeTypes.h"
+#include "FileCache.h"
 class SimpleHTTPServer{
    private:
    int port;
@@ -35,6 +36,7 @@ class SimpleHTTPServer{
    ThreadPool threadPool;
    EpollEngine epollEngine;
    MimeTypes mimeTypes;
+   FileCache fileCache;
 
 
    enum class ReadStatus {Request, WaitMore, Closed, Error, TooLarge};
@@ -340,21 +342,17 @@ class SimpleHTTPServer{
           }
 
        std::string readHTMLFile(const std::string& filename){
+         auto cached = fileCache.get(filename);
+         if(cached) return *cached;
 
          std::ifstream file(filename);
-
          if(!file.is_open()){
-
             return "";
          }
-
-         else{
-
             std::stringstream buffer;
-
             buffer <<file.rdbuf();
-            return buffer.str();
-         }
+            fileCache.put(filename, buffer.str());
+            return buffer.str();    
       }
 
 

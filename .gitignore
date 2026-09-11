@@ -1,2 +1,7 @@
 *.bak
+*.o
 httpserver
+server
+httpserver_asan
+.vscode/
+core
