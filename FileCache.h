@@ -16,10 +16,11 @@ public:
 private:
     struct CacheEntry{
         std::string content;
-        time_t mtime;   // 入库时的文件修改时间（stat 的原生类型）
+        struct timespec mtime;   // 入库时的文件修改时间（秒+纳秒）
         std::list<std::string>::iterator lruIt;  //标识位置的list的指针
     };
 
+    static bool sameMtime(const struct timespec& a, const struct timespec& b);
     void evictIfNeeded();
     void removeEntryLocked(const std::string& path, const CacheEntry* expected);
 

@@ -51,7 +51,9 @@ bool MimeTypes::loadFromFile(const std::string& filename) {
         std::string ext;
         while (iss >> ext) {
       
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){
+                return std::tolower(c);
+            });
             typeMap[ext] = mimeType;
         }
     }

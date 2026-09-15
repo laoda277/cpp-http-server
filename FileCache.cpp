@@ -3,6 +3,10 @@
 
 FileCache::FileCache(size_t maxBytes): maxBytes_(maxBytes){}
 
+bool FileCache::sameMtime(const struct timespec& a, const struct timespec& b){  //timespec结构体 后续的stat的st_mtim成员是这个结构体类型
+    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec; //sec方法:返回整秒 nsec：返回纳秒
+}
+
 std::shared_ptr<const std::string> FileCache::get(const std::string& path){
     std::shared_ptr<CacheEntry> entry;
     {
@@ -16,7 +20,7 @@ std::shared_ptr<const std::string> FileCache::get(const std::string& path){
     }
 
     struct stat st; //存储文件属性的结构体
-    if(stat(path.c_str(), &st) != 0 || st.st_mtime != entry->mtime){ //获取磁盘上的文件属性  非零说明文件丢失||缓存时间戳与硬盘时间戳不相等说明硬盘上的被修改了
+    if(stat(path.c_str(), &st) != 0 || !sameMtime(st.st_mtim, entry->mtime)){ //获取磁盘上的文件属性  非零说明文件丢失||缓存时间戳与硬盘时间戳不相等说明硬盘上的被修改了
         std::lock_guard<std::mutex> lk(cacheMutex_);
         removeEntryLocked(path, entry.get()); //get是共享指针的内部函数 返回实际对象的裸指针 除此之外还有一个计数指针
         return nullptr;
@@ -43,7 +47,7 @@ std::shared_ptr<const std::string> FileCache::get(const std::string& path){
         lru_.push_front(path); //路径排序顺序放最前
         auto entry = std::make_shared<CacheEntry> (); //创建新节点并绑定
         entry->content = std::move(content);
-        entry->mtime = st.st_mtime;
+        entry->mtime = st.st_mtim;
         entry->lruIt = lru_.begin();
         map_[path] = std::move(entry);
 

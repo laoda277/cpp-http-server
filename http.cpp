@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdlib>  
 #include <climits>   
+#include <cctype>
 #include <chrono>
 #include <unordered_set>
 #include <unordered_map>
@@ -26,7 +27,7 @@ class SimpleHTTPServer{
    bool initialized;
    bool shutDown_ = false;
    std::unordered_map<int, std::string> connBuffers_;
-   std::unordered_map<int, std::string> outBuffers_;
+   std::unordered_map<int, std::string> outBuffers_; //要发送的数据
    std::mutex connMutex_;
    std::unordered_map<int, std::chrono::steady_clock::time_point> lastActive_;
    std::unordered_set<int> inFlight_;
@@ -39,9 +40,9 @@ class SimpleHTTPServer{
    FileCache fileCache;
 
 
-   enum class ReadStatus {Request, WaitMore, Closed, Error, TooLarge};
+   enum class ReadStatus {Request, WaitMore, Closed, Error, TooLarge}; //enum class强类型枚举 用于处理魔法数字 ReadStatus::访问
    
-   ReadStatus readRequest(int clientSocket,std::string& connBuffer, std::string& request){
+   ReadStatus readRequest(int clientSocket,std::string& connBuffer, std::string& request){ //将缓冲区内容写到request中 返回值表示读的状态
        const size_t kMaxTotal = 8192;
        char chunk[4096];
 
@@ -72,14 +73,34 @@ class SimpleHTTPServer{
        }
    }
 
-   bool clientWantsClose(const std::string& request){
-      size_t p = request.find("Connection:");
-      if(p == std::string::npos) return false;
-      size_t e = request.find("\r\n", p);
-      std::string line = request.substr(p, e == std::string::npos? request.size()-p: e-p);
-      std::transform(line.begin(), line.end(), line.begin(), ::tolower);
-      return line.find("close") != std::string::npos;
+   std::string extractVersion(const std::string& request){
+      size_t lineEnd = request.find("\r\n");
+      std::string line = request.substr(0, lineEnd);
+
+      size_t sp = line.rfind("/");
+      if(sp == std::string::npos) return "";
+      return line.substr(sp+1);
    }
+
+   bool clientWantsClose(const std::string& request){
+      std::string lower = request;
+      std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){
+         return std::tolower(c);
+      });
+      size_t p = lower.find("\r\nconnection:");
+      if(p != std::string::npos) {
+         size_t e = lower.find("\r\n", p+2);
+
+         if(e != std::string::npos){
+            std::string val = lower.substr(p+2, e-(p+2));
+            if(val.find("close") != std::string::npos) return true;
+            if(val.find("keep-alive") != std::string::npos)  return false;
+         }
+      }
+      return extractVersion(request) == "1.0";
+      
+   }
+
 
       std::string extractPath(const std::string& request){
       size_t start=request.find(" ");
@@ -119,8 +140,8 @@ class SimpleHTTPServer{
 
       }
       
-      bool processRequest(int clientSocket, const std::string& request){
-         bool keep = !clientWantsClose(request);
+      bool processRequest(int clientSocket, const std::string& request){  //处理请求
+         bool keep = !clientWantsClose(request); //表示是否还保持长连接
          std::string userPath = extractPath(request);    
          if(userPath == "/" || userPath .empty()){
             userPath = "/DefaultPage.html";
@@ -132,27 +153,27 @@ class SimpleHTTPServer{
             userPath = "/Status.json";
          }
          char resolved[PATH_MAX];
-         if(realpath((dirRoot + userPath).c_str(), resolved) == nullptr){
-            send404(clientSocket, keep);
-            return keep;
+         if(realpath((dirRoot + userPath).c_str(), resolved) == nullptr){ //转为绝对路径
+            bool alive = send404(clientSocket, keep);
+            return keep && alive; //前者是协议方面的是否关闭 后者是连接是否存活方面但连接为断开时默认值等于前者
          }
          std::string path = resolved;
          
          if(path.compare(0, dirRoot.size(), dirRoot) != 0 || (path.size() > dirRoot.size() && path[dirRoot.size()] != '/')){
-            send404(clientSocket, keep);
-            return keep;
+            bool alive = send404(clientSocket, keep);
+            return keep && alive;
          }
          
          else{
             std::string type = getMimeType(path);
             std::string content = readHTMLFile(path);
          if(content.empty()){
-            send404(clientSocket, keep);
-            return keep;
+            bool alive = send404(clientSocket, keep);
+            return keep && alive;
          }
          std::string response = createResponse(content, type, 200, keep); 
-         sendResponse(clientSocket, response); 
-         return keep;   
+         bool alive = sendResponse(clientSocket, response);
+         return keep && alive; //同样sendResponse返回值表示连接是否存活 但中间没有send404这一层
          }  
       }
 
@@ -170,15 +191,15 @@ class SimpleHTTPServer{
             ReadStatus st = readRequest(clientSocket, buf, request);
 
             if(st == ReadStatus::Request) {
-               bool keep = true;
+               bool alive = true; //表示这个链接还能不能保持工作
                try{
-                  keep = processRequest(clientSocket, request);
+                  alive = processRequest(clientSocket, request);
                }catch(...){
                   std::cerr<<"服务器出现异常"<<std::endl;
                   send500(clientSocket);
-                  keep = false; 
+                  alive = false; 
                }
-               if(!keep) {
+               if(!alive) {
                   closeConnection(clientSocket);
                   return;
                }
@@ -248,13 +269,13 @@ class SimpleHTTPServer{
          close(fd);
       }
 
-      bool trySend(int fd, const char*& data, size_t& toSend){
+      [[nodiscard]] bool trySend(int fd, const char*& data, size_t& toSend){ //尝试进行发送
          while(toSend > 0){
             ssize_t sent = send(fd, data, toSend, 0);
             if(sent < 0){
-               if(errno == EINTR) continue;
-               if(errno == EAGAIN || errno == EWOULDBLOCK) return true;
-               return false;
+               if(errno == EINTR) continue;  //暂时中断
+               if(errno == EAGAIN || errno == EWOULDBLOCK) return true; //两个为同一个意思 表示缓冲区已满或者没有新数据
+               return false; //连接已经断开
             }
             data += sent;
             toSend -= sent;
@@ -262,15 +283,18 @@ class SimpleHTTPServer{
          return true;
       }
 
-      void sendResponse(int clientSocket, const std::string& response){
-         const char* data = response.data();
-         size_t toSend = response.size();
+      bool sendResponse(int clientSocket, const std::string& response){
+         const char* data = response.data(); //从第几个数据开始发送
+         size_t toSend = response.size(); //还需要发送多少数据
 
-         trySend(clientSocket, data, toSend);
+         if(!trySend(clientSocket, data, toSend)){ //尝试发送一次，成功执行下一个if
+            return false;
+         }
          if(toSend > 0){
             std::lock_guard<std::mutex> lk(connMutex_);
-            outBuffers_[clientSocket].append(data, toSend);
+            outBuffers_[clientSocket].append(data, toSend); //还没发送完，把剩余数据放回缓冲区
          }
+         return true;
       }
 
       void sweepIdleConnection(){
@@ -310,7 +334,8 @@ class SimpleHTTPServer{
          }
       }
 
-      void send404(int clientSocket, bool keepAlive = true){
+      //存活状态由sendResponse上传到send404与500  
+      bool send404(int clientSocket, bool keepAlive = true){ //发送错误码并返回链接存活状态
          std::string path =  dirRoot + "/404Response.html";
          std::string content = readHTMLFile(path);
          if(content.empty()){
@@ -318,10 +343,10 @@ class SimpleHTTPServer{
          }
          std::string response = createResponse(content, "text/html", 404, keepAlive);
          std::cerr << "Sending 404 Not Found response" << std::endl;
-         sendResponse(clientSocket, response);
+         return sendResponse(clientSocket, response); 
       }
 
-      void send500(int clientSocket, bool keepAlive = false){
+      bool send500(int clientSocket, bool keepAlive = false){
          std::string path = dirRoot + "/500Response.html";
          std::string content = readHTMLFile(path);
          if(content.empty()){
@@ -329,14 +354,16 @@ class SimpleHTTPServer{
          }
          std::string response = createResponse(content, "text/html", 500, keepAlive);
          std::cerr << "Sending 500 error response" << std::endl;
-         sendResponse(clientSocket, response);
+         return sendResponse(clientSocket, response);
       }
 
        std::string getMimeType(const std::string& path){
          size_t pos = path.find_last_of('.');
           if(pos == std::string::npos) return "application/octet-stream";
           std::string ext = path.substr(pos + 1);
-          std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+          std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){
+            return std::tolower(c);
+          });
           return mimeTypes.getType(ext);
 
           }
