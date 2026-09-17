@@ -16,33 +16,8 @@
 #include <unordered_map>
 #include <vector>
 #include <mutex>
-#include "ThreadPool.h"
-#include "EpollEngine.h"
-#include "MimeTypes.h"
-#include "FileCache.h"
-class SimpleHTTPServer{
-   private:
-   int port;
-   bool running;
-   bool initialized;
-   bool shutDown_ = false;
-   std::unordered_map<int, std::string> connBuffers_;
-   std::unordered_map<int, std::string> outBuffers_; //要发送的数据
-   std::mutex connMutex_;
-   std::unordered_map<int, std::chrono::steady_clock::time_point> lastActive_;
-   std::unordered_set<int> inFlight_;
-   std::chrono::steady_clock::time_point lastSweep_;
-   static constexpr std::chrono::seconds kIdleTimeout{30};
-   std::string dirRoot = "./www";
-   ThreadPool threadPool;
-   EpollEngine epollEngine;
-   MimeTypes mimeTypes;
-   FileCache fileCache;
-
-
-   enum class ReadStatus {Request, WaitMore, Closed, Error, TooLarge}; //enum class强类型枚举 用于处理魔法数字 ReadStatus::访问
-   
-   ReadStatus readRequest(int clientSocket,std::string& connBuffer, std::string& request){ //将缓冲区内容写到request中 返回值表示读的状态
+#include "HTTPServer.h"
+   HTTPServer::ReadStatus HTTPServer::readRequest(int clientSocket,std::string& connBuffer, std::string& request){ //将缓冲区内容写到request中 返回值表示读的状态
        const size_t kMaxTotal = 8192;
        char chunk[4096];
 
@@ -73,7 +48,7 @@ class SimpleHTTPServer{
        }
    }
 
-   std::string extractVersion(const std::string& request){
+   std::string HTTPServer::extractVersion(const std::string& request){
       size_t lineEnd = request.find("\r\n");
       std::string line = request.substr(0, lineEnd);
 
@@ -82,7 +57,7 @@ class SimpleHTTPServer{
       return line.substr(sp+1);
    }
 
-   bool clientWantsClose(const std::string& request){
+   bool HTTPServer::clientWantsClose(const std::string& request){
       std::string lower = request;
       std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){
          return std::tolower(c);
@@ -102,7 +77,7 @@ class SimpleHTTPServer{
    }
 
 
-      std::string extractPath(const std::string& request){
+      std::string HTTPServer::extractPath(const std::string& request){
       size_t start=request.find(" ");
       if(start==std::string::npos) return"/";
 
@@ -113,7 +88,7 @@ class SimpleHTTPServer{
       } 
 
 
-      std::string createResponse(const std::string& content,const std::string& contentType="text/html",int statusCode=200, bool keepAlive = true){
+      std::string HTTPServer::createResponse(const std::string& content,const std::string& contentType,int statusCode, bool keepAlive){
        std::ostringstream response;
        std::string statusMessage;
        if(statusCode==200){
@@ -140,7 +115,7 @@ class SimpleHTTPServer{
 
       }
       
-      bool processRequest(int clientSocket, const std::string& request){  //处理请求
+      bool HTTPServer::processRequest(int clientSocket, const std::string& request){  //处理请求
          bool keep = !clientWantsClose(request); //表示是否还保持长连接
          std::string userPath = extractPath(request);    
          if(userPath == "/" || userPath .empty()){
@@ -177,7 +152,7 @@ class SimpleHTTPServer{
          }  
       }
 
-      void handleOnce(int clientSocket){
+      void HTTPServer::handleOnce(int clientSocket){
          std::string buf;
          {
             std::lock_guard<std::mutex> lk(connMutex_);
@@ -218,7 +193,7 @@ class SimpleHTTPServer{
 
 }
 
-      void handleWritable(int fd){
+      void HTTPServer::handleWritable(int fd){
          std::string out;
          {
             std::lock_guard<std::mutex> lk(connMutex_);
@@ -245,7 +220,7 @@ class SimpleHTTPServer{
       }
 
 
-        void finishOnce(int fd){
+        void HTTPServer::finishOnce(int fd){
          bool hasPending = false;
          {
             std::lock_guard<std::mutex> lk(connMutex_);
@@ -257,7 +232,7 @@ class SimpleHTTPServer{
       
 
 
-      void closeConnection(int fd){
+      void HTTPServer::closeConnection(int fd){
          epollEngine.removeConnection(fd);
          {
             std::lock_guard<std::mutex> lk(connMutex_);
@@ -269,7 +244,7 @@ class SimpleHTTPServer{
          close(fd);
       }
 
-      [[nodiscard]] bool trySend(int fd, const char*& data, size_t& toSend){ //尝试进行发送
+      [[nodiscard]] bool HTTPServer::trySend(int fd, const char*& data, size_t& toSend){ //尝试进行发送
          while(toSend > 0){
             ssize_t sent = send(fd, data, toSend, 0);
             if(sent < 0){
@@ -283,7 +258,7 @@ class SimpleHTTPServer{
          return true;
       }
 
-      bool sendResponse(int clientSocket, const std::string& response){
+      bool HTTPServer::sendResponse(int clientSocket, const std::string& response){
          const char* data = response.data(); //从第几个数据开始发送
          size_t toSend = response.size(); //还需要发送多少数据
 
@@ -297,7 +272,7 @@ class SimpleHTTPServer{
          return true;
       }
 
-      void sweepIdleConnection(){
+      void HTTPServer::sweepIdleConnection(){
          auto now = std::chrono::steady_clock::now();
          {
             std::lock_guard<std::mutex> lk(connMutex_);
@@ -315,7 +290,7 @@ class SimpleHTTPServer{
          for(int fd: victims) closeConnection(fd);
       }
 
-      void shutdownServer() {
+      void HTTPServer::shutdownServer() {
          if(shutDown_) return;
          shutDown_ = true;
 
@@ -335,7 +310,7 @@ class SimpleHTTPServer{
       }
 
       //存活状态由sendResponse上传到send404与500  
-      bool send404(int clientSocket, bool keepAlive = true){ //发送错误码并返回链接存活状态
+      bool HTTPServer::send404(int clientSocket, bool keepAlive){ //发送错误码并返回链接存活状态
          std::string path =  dirRoot + "/404Response.html";
          std::string content = readHTMLFile(path);
          if(content.empty()){
@@ -346,7 +321,7 @@ class SimpleHTTPServer{
          return sendResponse(clientSocket, response); 
       }
 
-      bool send500(int clientSocket, bool keepAlive = false){
+      bool HTTPServer::send500(int clientSocket, bool keepAlive){
          std::string path = dirRoot + "/500Response.html";
          std::string content = readHTMLFile(path);
          if(content.empty()){
@@ -357,7 +332,7 @@ class SimpleHTTPServer{
          return sendResponse(clientSocket, response);
       }
 
-       std::string getMimeType(const std::string& path){
+       std::string HTTPServer::getMimeType(const std::string& path){
          size_t pos = path.find_last_of('.');
           if(pos == std::string::npos) return "application/octet-stream";
           std::string ext = path.substr(pos + 1);
@@ -368,7 +343,7 @@ class SimpleHTTPServer{
 
           }
 
-       std::string readHTMLFile(const std::string& filename){
+       std::string HTTPServer::readHTMLFile(const std::string& filename){
          auto cached = fileCache.get(filename);
          if(cached) return *cached;
 
@@ -383,8 +358,7 @@ class SimpleHTTPServer{
       }
 
 
-public:
-    SimpleHTTPServer(int port) : 
+    HTTPServer::HTTPServer(int port) : 
                port(port), 
                running(false), 
                initialized(false),
@@ -407,7 +381,7 @@ public:
 
 
 
-    bool start() {
+    bool HTTPServer::start() {
       if(!epollEngine.init(port, 128)||!initialized){
          std::cerr<<"服务器初始化失败"<<std::endl;
          return false;
@@ -445,32 +419,12 @@ public:
 
     }
 
-    void stop(){
+    void HTTPServer::stop(){
       running = false;
       epollEngine.stop();
     }
 
-    ~SimpleHTTPServer() {
+    HTTPServer::~HTTPServer() {
       stop();
     }
 
-   };
-
-   int main(int argc, char* argv[]){
-      int port = 8080;
-      if(argc > 1){
-         port = std::stoi(argv[1]);
-      }
-
-      SimpleHTTPServer server(port);
-
-      if( !server.start()){
-         std::cerr<<"服务器启动失败"<<std::endl;
-         return 1;
-      }
-
-      return 0;
-
-
-
-   }
