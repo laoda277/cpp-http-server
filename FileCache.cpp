@@ -7,8 +7,10 @@ bool FileCache::sameMtime(const struct timespec& a, const struct timespec& b){  
     return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec; //sec方法:返回整秒 nsec：返回纳秒
 }
 
-std::shared_ptr<const std::string> FileCache::get(const std::string& path){
+std::shared_ptr<const std::string> FileCache::get(const std::string& path){ //选用sharedptr：能实现并发操作缓存，例如一个线程读另一个erase，引用计数可以保证只要持有就存活
     std::shared_ptr<CacheEntry> entry;
+    bool needCheck = true;
+
     {
        std::lock_guard<std::mutex> lk(cacheMutex_);
        auto it = map_.find(path);  //map中找对应文件
@@ -16,7 +18,13 @@ std::shared_ptr<const std::string> FileCache::get(const std::string& path){
 
        entry = it->second; //拷贝一份shared_ptr（计数+1），锁外使用期间保证条目存活
        lru_.splice(lru_.begin(), lru_, entry->lruIt); //通过链表迭代器将项的位置置于表头
-    entry->lruIt = lru_.begin();   // 同步位置凭证
+       entry->lruIt = lru_.begin();   // 同步位置凭证
+
+       needCheck = (std::chrono::steady_clock::now() - entry->lastCheck >= kCheckInterval); //距离上次检查的时间超过规定就需要检查
+    }
+
+    if(!needCheck){  //不用检查就直接返回
+        return {entry, &entry->content};
     }
 
     struct stat st; //存储文件属性的结构体
@@ -24,6 +32,11 @@ std::shared_ptr<const std::string> FileCache::get(const std::string& path){
         std::lock_guard<std::mutex> lk(cacheMutex_);
         removeEntryLocked(path, entry.get()); //get是共享指针的内部函数 返回实际对象的裸指针 除此之外还有一个计数指针
         return nullptr;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(cacheMutex_);
+        entry -> lastCheck = std::chrono::steady_clock::now();  //更新检查时间
     }
 
     return {entry, &entry->content}; //别名构造 根据函数签名的返回值判定是shared_ptr的构造，
@@ -48,6 +61,7 @@ std::shared_ptr<const std::string> FileCache::get(const std::string& path){
         auto entry = std::make_shared<CacheEntry> (); //创建新节点并绑定
         entry->content = std::move(content);
         entry->mtime = st.st_mtim;
+        entry->lastCheck = std::chrono::steady_clock::now();
         entry->lruIt = lru_.begin();
         map_[path] = std::move(entry);
 

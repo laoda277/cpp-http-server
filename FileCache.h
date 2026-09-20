@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <chrono>
 #include <unordered_map>
 
 class FileCache{
@@ -18,6 +19,7 @@ private:
         std::string content;
         struct timespec mtime;   // 入库时的文件修改时间（秒+纳秒）
         std::list<std::string>::iterator lruIt;  //标识位置的list的指针
+        std::chrono::steady_clock::time_point lastCheck; //上一次磁盘校验的时刻
     };
 
     static bool sameMtime(const struct timespec& a, const struct timespec& b);
@@ -29,6 +31,7 @@ private:
     size_t maxBytes_; //容量上限
     size_t usedBytes_ = 0; //已占用字节数
     static constexpr size_t kMaxFileToCache = 128*1024; //允许缓存的最大文件
+    static constexpr std::chrono::milliseconds kCheckInterval{2000};//检查间隔（两秒）
     std::mutex cacheMutex_;
 
 

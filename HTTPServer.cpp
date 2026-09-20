@@ -117,15 +117,36 @@
       
       bool HTTPServer::processRequest(int clientSocket, const std::string& request){  //处理请求
          bool keep = !clientWantsClose(request); //表示是否还保持长连接
-         std::string userPath = extractPath(request);    
+         std::string userPath = extractPath(request);  
+         totalRequests_.fetch_add(1, std::memory_order_relaxed); //最宽松约束 无需关注顺序
+
          if(userPath == "/" || userPath .empty()){
             userPath = "/DefaultPage.html";
          }
          if(userPath == "/about") {
             userPath = "/AboutPage.html";
          }
-         else if(userPath == "/api/status") {
-            userPath = "/Status.json";
+         if(userPath == "/api/status") {
+            size_t inFlight = 0;
+            {
+               std::lock_guard<std::mutex> lk(connMutex_);
+               inFlight = inFlight_.size();
+            }
+            auto uptime = std::chrono::duration_cast<std::chrono::seconds>( //duration是时间转换 把纳秒转为整秒
+               std::chrono::steady_clock::now() - startTime_).count(); //计算到现在的时间 .count只要数据不用单位
+
+               std::ostringstream body;
+               body << "{" << "\"uptime_seconds\":"   << uptime     //转义符号\把"回归本意输出
+                    << ",\"total_requests\":"   << totalRequests_.load(std::memory_order_relaxed) //读取的内存顺序要求
+                    << ",\"cache_hits\":"    << cacheHits_.load(std::memory_order_relaxed)
+                    << ",\"cache_misses\":"   << cacheMisses_.load(std::memory_order_relaxed)
+                    << ",\"in_flight\":"   << inFlight
+                    << "}";
+            
+         std::string response = createResponse(body.str(), "application/json", 200, keep);
+         bool alive = sendResponse(clientSocket, response);
+         return keep && alive;
+            
          }
          char resolved[PATH_MAX];
          if(realpath((dirRoot + userPath).c_str(), resolved) == nullptr){ //转为绝对路径
@@ -340,12 +361,17 @@
             return std::tolower(c);
           });
           return mimeTypes.getType(ext);
-
+          
           }
 
        std::string HTTPServer::readHTMLFile(const std::string& filename){
          auto cached = fileCache.get(filename);
-         if(cached) return *cached;
+         if(cached) {
+            cacheHits_.fetch_add(1, std::memory_order_relaxed); //缓存命中计数加一
+            return *cached;
+         } //返回值是shared_ptr 即使被erase也不会死掉
+
+         cacheMisses_.fetch_add(1, std::memory_order_relaxed);
 
          std::ifstream file(filename);
          if(!file.is_open()){
@@ -389,7 +415,7 @@
 
       running = true;
       std::cout<<"服务器启动成功!"<<std::endl;
-      std::cout<<"访问地址：http://localhost:"<<port<<std::endl;
+      std::cout<<"访问地址:http://localhost:"<<port<<std::endl;
       std::cout<<"按ctrl+c停止服务器"<<std::endl;
 
       bool ok = epollEngine.run([this] (int clientSocket, uint32_t events){

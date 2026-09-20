@@ -9,6 +9,8 @@
 #include "EpollEngine.h"
 #include "MimeTypes.h"
 #include "FileCache.h"
+#include <atomic>
+#include <cstdint>
 
 class HTTPServer{
 public:
@@ -35,6 +37,10 @@ private:
    EpollEngine epollEngine;
    MimeTypes mimeTypes;
    FileCache fileCache;
+   std::atomic<uint64_t> totalRequests_{0}; //记录总的有效请求次数
+   std::atomic<uint64_t> cacheHits_{0}; //缓存get命中次数
+   std::atomic<uint64_t> cacheMisses_{0}; //缓存get未命中次数
+   std::chrono::steady_clock::time_point startTime_{std::chrono::steady_clock::now()}; //服务器开启的时刻
 
    enum class ReadStatus {Request, WaitMore, Closed, Error, TooLarge};
 
