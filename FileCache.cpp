@@ -7,8 +7,8 @@ bool FileCache::sameMtime(const struct timespec& a, const struct timespec& b){  
     return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec; //sec方法:返回整秒 nsec：返回纳秒
 }
 
-std::shared_ptr<const std::string> FileCache::get(const std::string& path){ //选用sharedptr：能实现并发操作缓存，例如一个线程读另一个erase，引用计数可以保证只要持有就存活
-    std::shared_ptr<CacheEntry> entry;
+std::shared_ptr<const std::string> FileCache::get(const std::string& path, struct timespec* outMtime){ //选用sharedptr：能实现并发操作缓存，例如一个线程读另一个erase，引用计数可以保证只要持有就存活
+    std::shared_ptr<CacheEntry> entry;                                                  //outMtime只用于processRequest  对于send404与500是置空的
     bool needCheck = true;
 
     {
@@ -24,6 +24,7 @@ std::shared_ptr<const std::string> FileCache::get(const std::string& path){ //�
     }
 
     if(!needCheck){  //不用检查就直接返回
+        if(outMtime != nullptr) *outMtime = entry->mtime;
         return {entry, &entry->content};
     }
 
@@ -38,7 +39,7 @@ std::shared_ptr<const std::string> FileCache::get(const std::string& path){ //�
         std::lock_guard<std::mutex> lk(cacheMutex_);
         entry -> lastCheck = std::chrono::steady_clock::now();  //更新检查时间
     }
-
+    if(outMtime != nullptr) *outMtime = entry->mtime;
     return {entry, &entry->content}; //别名构造 根据函数签名的返回值判定是shared_ptr的构造，
                                      // 第一个参数是指针的控制块（生命周期与引用计数）， 第二个参数是指向的地址
 }

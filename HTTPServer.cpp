@@ -12,6 +12,8 @@
 #include <climits>   
 #include <cctype>
 #include <chrono>
+#include <ctime>
+#include <sys/stat.h>
 #include <unordered_set>
 #include <unordered_map>
 #include <vector>
@@ -75,7 +77,33 @@
       return extractVersion(request) == "1.0";
       
    }
+ 
+   std::string HTTPServer::httpDate(std::time_t t){
+      struct tm tmv;
+      std::memset(&tmv, 0, sizeof(tmv)); //初始化值为0
+      gmtime_r(&t, &tmv);  //把前一个时间戳转化为UTC格式并存入后者结构体
+      char buf[64];
+      std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tmv); //把tmv用第三个参数的格式输出到buf中
+      return std::string(buf);
+   }
 
+   std::string HTTPServer::extractHeader(const std::string& request, const std::string& name){ //输入想要提取的头 输出头的值 name必须传小写因为是在lower里操作的
+      std::string lower = request;
+      std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){
+         return std::tolower(c);
+      });
+
+      std::string key = "\r\n" + name + ":"; //保证是真的头部
+      size_t p = lower.find(key);
+      if(p == std::string::npos) return "";
+
+      size_t valStart = p + key.size(); //值开始的地方
+      while(valStart < request.size() && request[valStart] == ' ') ++valStart;  //让valStart跳过空格一直走到真正的字符串开始的地方
+      size_t valEnd = request.find("\r\n", valStart);   //找到下一个头的前面位置或者说是本响应体结束的地方
+      if(valEnd == std::string::npos) return"";
+      while(valEnd > valStart && (request[valEnd - 1] == ' ' || request[valEnd -1] == '\t')) valEnd--;  //抹除末尾的空格和制表符（保证时间戳精确匹配）
+      return request.substr(valStart, valEnd - valStart);  //从原串切而不是lower
+   }
 
       std::string HTTPServer::extractPath(const std::string& request){
       size_t start=request.find(" ");
@@ -88,7 +116,8 @@
       } 
 
 
-      std::string HTTPServer::createResponse(const std::string& content,const std::string& contentType,int statusCode, bool keepAlive){
+      std::string HTTPServer::createResponse(const std::string& content, const std::string& contentType,
+                                                      int statusCode, bool keepAlive, const struct timespec* mtime) { 
        std::ostringstream response;
        std::string statusMessage;
        if(statusCode==200){
@@ -104,16 +133,33 @@
          statusMessage="Unknown";
        }
 
-       response<<"HTTP/1.1 "<<statusCode<<" "<<statusMessage<<"\r\n";
-       response<<"Content-Type: "<<contentType<<"\r\n";
-       response<<"Content-length: "<<content.length()<<"\r\n";
-       response<<"Connection: " << (keepAlive? "keep-alive": "close") << "\r\n";
-       response<<"\r\n";
-       response<<content;
+       response << "HTTP/1.1 " << statusCode << " "<< statusMessage << "\r\n";
+       response << "Date: " << httpDate(std::time(nullptr)) << "\r\n";   //响应头创建的时间 time函数返回值是现在的时刻 参数是通过引用传递然后出参的方式返回时刻 
+                                                                        //也就是有两个出口但只要一个
+       response << "Content-Type: " << contentType << "\r\n";
+       if(mtime != nullptr){   //只有在传入mtime的时候才需要  在发送错误页的时候不会传入时间戳
+         response << "Last-Modified: " << httpDate(mtime->tv_sec) << "\r\n"; //发送最后更改时间
+       }
+       response << "Cache-Control: no-cache\r\n";  //要求客户端可以缓存 但每次需要先询问  no-stroe才是不让缓存
+       response << "Content-length: " << content.length() << "\r\n";
+       response << "Connection: " << (keepAlive? "keep-alive": "close") << "\r\n";
+       response << "\r\n";
+       response << content;
 
        return response.str();
-
       }
+
+
+      std::string HTTPServer::createNotModified(bool keepAlive, std::time_t mtime){  //304响应 表示客户端自上次访问并未改变 让客户端用缓存的内容
+         std::ostringstream response;
+            response << "HTTP/1.1 304 Not Modified\r\n";  //通过该行让客户端知道
+            response << "Date: " << httpDate(std::time(nullptr)) << "\r\n";
+            response << "Cache-Control: no-cache\r\n";
+            response << "Last-Modified: " << httpDate(mtime) << "\r\n";
+            response << "Connection: " << (keepAlive ? "keep-alive" : "close") << "\r\n";
+            response << "\r\n";
+         return response.str();   // 到空行为止 没有 Content-Length 没有 Content-Type 没有正文
+}
       
       bool HTTPServer::processRequest(int clientSocket, const std::string& request){  //处理请求
          bool keep = !clientWantsClose(request); //表示是否还保持长连接
@@ -160,17 +206,26 @@
             return keep && alive;
          }
          
-         else{
             std::string type = getMimeType(path);
-            std::string content = readHTMLFile(path);
+
+            struct timespec mtime{};
+            std::string content = readHTMLFile(path, &mtime); //获得最后一次的修改时间
          if(content.empty()){
             bool alive = send404(clientSocket, keep);
             return keep && alive;
          }
-         std::string response = createResponse(content, type, 200, keep); 
+
+         std::string ims = extractHeader(request, "if-modified-since");
+         if(!ims.empty() && ims == httpDate(mtime.tv_sec)){  //假如发送来的报文里的时间戳和本机时间戳相同
+            std::string response = createNotModified(keep, mtime.tv_sec); //创建无需确认的报文
+            bool alive = sendResponse(clientSocket, response);
+            return keep && alive;
+         }
+
+         std::string response = createResponse(content, type, 200, keep, &mtime); 
          bool alive = sendResponse(clientSocket, response);
          return keep && alive; //同样sendResponse返回值表示连接是否存活 但中间没有send404这一层
-         }  
+         
       }
 
       void HTTPServer::handleOnce(int clientSocket){
@@ -333,7 +388,7 @@
       //存活状态由sendResponse上传到send404与500  
       bool HTTPServer::send404(int clientSocket, bool keepAlive){ //发送错误码并返回链接存活状态
          std::string path =  dirRoot + "/404Response.html";
-         std::string content = readHTMLFile(path);
+         std::string content = readHTMLFile(path); //无需关心m_time不需要传入第二个参数
          if(content.empty()){
             content =  "<html><body><h1>404 Not Found</h1></body></html>";
          }
@@ -364,14 +419,19 @@
           
           }
 
-       std::string HTTPServer::readHTMLFile(const std::string& filename){
-         auto cached = fileCache.get(filename);
+       std::string HTTPServer::readHTMLFile(const std::string& filename, struct timespec* outMtime){
+         auto cached = fileCache.get(filename, outMtime);
          if(cached) {
             cacheHits_.fetch_add(1, std::memory_order_relaxed); //缓存命中计数加一
             return *cached;
          } //返回值是shared_ptr 即使被erase也不会死掉
 
          cacheMisses_.fetch_add(1, std::memory_order_relaxed);
+
+         struct stat st;
+         if(outMtime != nullptr && stat(filename.c_str(), &st) == 0){
+            *outMtime = st.st_mtim;  //未命中 则需要重读硬盘最后修改时间并写给outMtime
+         }
 
          std::ifstream file(filename);
          if(!file.is_open()){

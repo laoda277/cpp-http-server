@@ -11,7 +11,8 @@
 class FileCache{
 public:
     explicit FileCache(size_t maxBytes = 64*1024*1024);
-    std::shared_ptr<const std::string> get(const std::string& path);
+    std::shared_ptr<const std::string> get(const std::string& path, struct timespec* outMtime = nullptr); //第二个参数是出参 让函数同时返回内容与时间戳 用于服务器校验
+                                                                                                          // 使用指针而不是引用是因为传入的参数有可能为空
     void put(const std::string& path, std::string content);
 
 private:

@@ -47,8 +47,12 @@ private:
    ReadStatus readRequest(int clientSocket, std::string& connBuffer, std::string& request);
    std::string extractVersion(const std::string& request);
    bool clientWantsClose(const std::string& request);
+   std::string httpDate(std::time_t t); //时间格式化
+   std::string extractHeader(const std::string& request, const std::string& name); //读请求头
+   std::string createNotModified(bool keepAlive, std::time_t mtime); //拼304响应
    std::string extractPath(const std::string& request);
-   std::string createResponse(const std::string& content, const std::string& contentType = "text/html", int statusCode = 200, bool keepAlive = true);
+   std::string createResponse(const std::string& content, const std::string& contentType = "text/html", int statusCode = 200, bool keepAlive = true, 
+                                          const struct timespec* mtime = nullptr);
    bool processRequest(int clientSocket, const std::string& request);
    void handleOnce(int clientSocket);
    void handleWritable(int fd);
@@ -61,5 +65,5 @@ private:
    bool send404(int clientSocket, bool keepAlive = true);
    bool send500(int clientSocket, bool keepAlive = false);
    std::string getMimeType(const std::string& path);
-   std::string readHTMLFile(const std::string& filename);
+   std::string readHTMLFile(const std::string& filename, struct timespec* outMtime = nullptr);
 };
