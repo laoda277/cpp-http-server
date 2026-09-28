@@ -5,5 +5,3 @@ server
 httpserver_asan
 .vscode/
 core
-__pycache__/
-*.pyc
